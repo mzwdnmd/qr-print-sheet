@@ -2,8 +2,9 @@ import "./style.css";
 import {
   prepareZXingModule,
   readBarcodes,
-  writeBarcode,
-} from "zxing-wasm";
+} from "zxing-wasm/reader";
+import QRCode from "qrcode";
+import jsQR from "jsqr";
 import {
   AlignmentType,
   BorderStyle,
@@ -42,7 +43,8 @@ const elements = {
 };
 
 const state = { items: [], selected: null, busy: false };
-const LOGO_RATIO = 0.21;
+const LOGO_RATIO = 0.12;
+const WHITE_PATCH_RATIO = 0.23;
 let logoBitmapPromise;
 
 function setMessage(message, tone = "") {
@@ -171,25 +173,38 @@ async function decodePhoto(file) {
 }
 
 async function makeQrImage(payload) {
-  const generated = await writeBarcode(payload, {
-    format: "QRCode",
-    options: "ecLevel=H",
-    scale: 24,
-    addQuietZones: true,
+  // A conventional byte-mode QR is readable by common phone scanners.
+  // The photographed original uses version 5 / level M with a padded center.
+  const symbol = QRCode.create([{ data: new Uint8ClampedArray(payload), mode: "byte" }], {
+    errorCorrectionLevel: "M",
   });
-  const qrBitmap = await createImageBitmap(generated.image);
+  const modulePixels = 24;
+  const quietModules = 4;
+  const moduleCount = symbol.modules.size;
+  const side = (moduleCount + quietModules * 2) * modulePixels;
   const logoBitmap = await getLogoBitmap();
   const canvas = document.createElement("canvas");
-  canvas.width = qrBitmap.width;
-  canvas.height = qrBitmap.height;
+  canvas.width = side;
+  canvas.height = side;
   const context = canvas.getContext("2d");
-  context.imageSmoothingEnabled = false;
-  context.drawImage(qrBitmap, 0, 0);
-  qrBitmap.close();
-  const side = canvas.width;
+  context.fillStyle = "#fff";
+  context.fillRect(0, 0, side, side);
+  context.fillStyle = "#000";
+  for (let row = 0; row < moduleCount; row += 1) {
+    for (let column = 0; column < moduleCount; column += 1) {
+      if (symbol.modules.get(row, column)) {
+        context.fillRect(
+          (column + quietModules) * modulePixels,
+          (row + quietModules) * modulePixels,
+          modulePixels,
+          modulePixels,
+        );
+      }
+    }
+  }
   context.fillStyle = "#fff";
   context.beginPath();
-  context.arc(side / 2, side / 2, (side * (LOGO_RATIO + 0.015)) / 2, 0, Math.PI * 2);
+  context.arc(side / 2, side / 2, (side * WHITE_PATCH_RATIO) / 2, 0, Math.PI * 2);
   context.fill();
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = "high";
@@ -198,7 +213,7 @@ async function makeQrImage(payload) {
   const blob = await new Promise((resolve, reject) =>
     canvas.toBlob((value) => value ? resolve(value) : reject(new Error("无法生成二维码图片")), "image/png"),
   );
-  return { blob, previewUrl: URL.createObjectURL(blob) };
+  return { blob, previewUrl: URL.createObjectURL(blob), version: symbol.version };
 }
 
 function payloadKey(payload) {
@@ -305,6 +320,35 @@ async function makeWord(item, sizes) {
   return Packer.toBlob(document);
 }
 
+async function validatePrintSizes(item, sizes) {
+  const bitmap = await createImageBitmap(item.blob);
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  try {
+    for (const size of sizes) {
+      const pixels = Math.round((size / 2.54) * 300);
+      canvas.width = pixels;
+      canvas.height = pixels;
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
+      context.drawImage(bitmap, 0, 0, pixels, pixels);
+      const imageData = context.getImageData(0, 0, pixels, pixels);
+      const independentResult = jsQR(imageData.data, pixels, pixels, { inversionAttempts: "dontInvert" });
+      if (!independentResult || payloadKey(independentResult.binaryData) !== item.key) {
+        throw new Error(`${size.toFixed(2)} cm 在 300 dpi 下无法由独立扫码器识别，请增大基准尺寸`);
+      }
+      const wasmResults = await readBarcodes(imageData, {
+        formats: ["QRCode"], tryHarder: true, maxNumberOfSymbols: 1,
+      });
+      if (!wasmResults.some((result) => result.isValid && payloadKey(result.bytes) === item.key)) {
+        throw new Error(`${size.toFixed(2)} cm 在 300 dpi 下无法识别，请增大基准尺寸`);
+      }
+    }
+  } finally {
+    bitmap.close();
+  }
+}
+
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -332,8 +376,10 @@ elements.download.addEventListener("click", async () => {
   const sizes = getSizes();
   if (!state.selected || !sizes || state.busy) return;
   elements.download.disabled = true;
-  setMessage("正在生成 Word 文件…");
+  setMessage("正在检查九档二维码的可读性…");
   try {
+    await validatePrintSizes(state.selected, sizes);
+    setMessage("检查通过，正在生成 Word 文件…");
     const blob = await makeWord(state.selected, sizes);
     const stem = state.selected.names[0]
       .replace(/\.[^.]+$/, "")
