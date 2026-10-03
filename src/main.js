@@ -43,10 +43,11 @@ const elements = {
 };
 
 const state = { items: [], selected: null, busy: false };
-// The source sticker has an 11-module square cutout around a roughly
-// 5.2-module center mark. Keep the cutout aligned with the module grid.
-const LOGO_MODULES = 5.2;
-const WHITE_PATCH_MODULES = 11;
+// Ruler-calibrated source: the emblem is 41 / 153 of the sticker width,
+// and its rounded white backing is 45 / 153 (39 modules including border).
+const LOGO_MODULES = 10.5;
+const WHITE_PATCH_MODULES = 11.5;
+const PATCH_CORNER_MODULES = 1;
 const QUIET_MODULES = 1;
 let logoBitmapPromise;
 
@@ -221,7 +222,15 @@ async function makeQrImage(source) {
   }
   context.fillStyle = "#fff";
   const patchPixels = WHITE_PATCH_MODULES * modulePixels;
-  context.fillRect((side - patchPixels) / 2, (side - patchPixels) / 2, patchPixels, patchPixels);
+  context.beginPath();
+  context.roundRect(
+    (side - patchPixels) / 2,
+    (side - patchPixels) / 2,
+    patchPixels,
+    patchPixels,
+    PATCH_CORNER_MODULES * modulePixels,
+  );
+  context.fill();
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = "high";
   const logoSide = modulePixels * LOGO_MODULES;
