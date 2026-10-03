@@ -16,7 +16,7 @@ page.on("console", (message) => {
   if (message.type() === "error") errors.push(message.text());
 });
 try {
-  await page.goto("http://localhost:5173/", { waitUntil: "networkidle" });
+  await page.goto(process.env.TEST_URL || "http://localhost:5173/", { waitUntil: "networkidle" });
   await page.locator("#photo-input").setInputFiles(resolve(fixture));
   await page.getByText(/识别完成：1 个不同的二维码/).waitFor({ timeout: 30_000 });
   if (await page.locator("#paper-grid .paper-cell").count() !== 9) {
