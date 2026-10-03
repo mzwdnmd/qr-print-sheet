@@ -43,8 +43,11 @@ const elements = {
 };
 
 const state = { items: [], selected: null, busy: false };
-const LOGO_RATIO = 0.12;
-const WHITE_PATCH_RATIO = 0.23;
+// The source sticker has an 11-module square cutout around a roughly
+// 5.2-module center mark. Keep the cutout aligned with the module grid.
+const LOGO_MODULES = 5.2;
+const WHITE_PATCH_MODULES = 11;
+const QUIET_MODULES = 1;
 let logoBitmapPromise;
 
 function setMessage(message, tone = "") {
@@ -169,17 +172,31 @@ async function decodePhoto(file) {
     );
   }
   if (!result) throw new Error("未识别到清晰的二维码");
-  return result.bytes;
+  let metadata = {};
+  try {
+    metadata = JSON.parse(result.extra || "{}");
+  } catch {
+    // Older reader builds may omit the optional metadata.
+  }
+  const maskPattern = Number(metadata.DataMask);
+  const version = Number(metadata.Version);
+  const errorCorrectionLevel = String(metadata.ECLevel || "M");
+  return {
+    bytes: result.bytes,
+    maskPattern: Number.isInteger(maskPattern) && maskPattern >= 0 && maskPattern <= 7 ? maskPattern : undefined,
+    version: Number.isInteger(version) && version >= 1 && version <= 40 ? version : undefined,
+    errorCorrectionLevel: /^[LMQH]$/.test(errorCorrectionLevel) ? errorCorrectionLevel : "M",
+  };
 }
 
-async function makeQrImage(payload) {
-  // A conventional byte-mode QR is readable by common phone scanners.
-  // The photographed original uses version 5 / level M with a padded center.
-  const symbol = QRCode.create([{ data: new Uint8ClampedArray(payload), mode: "byte" }], {
-    errorCorrectionLevel: "M",
+async function makeQrImage(source) {
+  const symbol = QRCode.create([{ data: new Uint8ClampedArray(source.bytes), mode: "byte" }], {
+    errorCorrectionLevel: source.errorCorrectionLevel,
+    version: source.version,
+    maskPattern: source.maskPattern,
   });
   const modulePixels = 24;
-  const quietModules = 4;
+  const quietModules = QUIET_MODULES;
   const moduleCount = symbol.modules.size;
   const side = (moduleCount + quietModules * 2) * modulePixels;
   const logoBitmap = await getLogoBitmap();
@@ -203,17 +220,16 @@ async function makeQrImage(payload) {
     }
   }
   context.fillStyle = "#fff";
-  context.beginPath();
-  context.arc(side / 2, side / 2, (side * WHITE_PATCH_RATIO) / 2, 0, Math.PI * 2);
-  context.fill();
+  const patchPixels = WHITE_PATCH_MODULES * modulePixels;
+  context.fillRect((side - patchPixels) / 2, (side - patchPixels) / 2, patchPixels, patchPixels);
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = "high";
-  const logoSide = side * LOGO_RATIO;
+  const logoSide = modulePixels * LOGO_MODULES;
   context.drawImage(logoBitmap, (side - logoSide) / 2, (side - logoSide) / 2, logoSide, logoSide);
   const blob = await new Promise((resolve, reject) =>
     canvas.toBlob((value) => value ? resolve(value) : reject(new Error("无法生成二维码图片")), "image/png"),
   );
-  return { blob, previewUrl: URL.createObjectURL(blob), version: symbol.version };
+  return { blob, previewUrl: URL.createObjectURL(blob), version: symbol.version, maskPattern: symbol.maskPattern };
 }
 
 function payloadKey(payload) {
@@ -237,13 +253,14 @@ async function ingest(files) {
     try {
       if (!file.type.startsWith("image/")) throw new Error("请选择图片文件");
       if (file.size > 25 * 1024 * 1024) throw new Error("文件超过 25 MB");
-      const bytes = await decodePhoto(file);
-      const key = payloadKey(bytes);
+      const source = await decodePhoto(file);
+      const bytes = source.bytes;
+      const key = `${payloadKey(bytes)}:${source.maskPattern ?? "auto"}:${source.version ?? "auto"}:${source.errorCorrectionLevel}`;
       const duplicate = state.items.find((item) => item.key === key);
       if (duplicate) {
         if (!duplicate.names.includes(file.name)) duplicate.names.push(file.name);
       } else {
-        const image = await makeQrImage(bytes);
+        const image = await makeQrImage(source);
         const item = { key, names: [file.name], payload: bytes, ...image };
         state.items.push(item);
         state.selected = item;
@@ -321,6 +338,7 @@ async function makeWord(item, sizes) {
 }
 
 async function validatePrintSizes(item, sizes) {
+  const expectedPayload = payloadKey(item.payload);
   const bitmap = await createImageBitmap(item.blob);
   const canvas = document.createElement("canvas");
   const context = canvas.getContext("2d", { willReadFrequently: true });
@@ -334,13 +352,13 @@ async function validatePrintSizes(item, sizes) {
       context.drawImage(bitmap, 0, 0, pixels, pixels);
       const imageData = context.getImageData(0, 0, pixels, pixels);
       const independentResult = jsQR(imageData.data, pixels, pixels, { inversionAttempts: "dontInvert" });
-      if (!independentResult || payloadKey(independentResult.binaryData) !== item.key) {
+      if (!independentResult || payloadKey(independentResult.binaryData) !== expectedPayload) {
         throw new Error(`${size.toFixed(2)} cm 在 300 dpi 下无法由独立扫码器识别，请增大基准尺寸`);
       }
       const wasmResults = await readBarcodes(imageData, {
         formats: ["QRCode"], tryHarder: true, maxNumberOfSymbols: 1,
       });
-      if (!wasmResults.some((result) => result.isValid && payloadKey(result.bytes) === item.key)) {
+      if (!wasmResults.some((result) => result.isValid && payloadKey(result.bytes) === expectedPayload)) {
         throw new Error(`${size.toFixed(2)} cm 在 300 dpi 下无法识别，请增大基准尺寸`);
       }
     }
