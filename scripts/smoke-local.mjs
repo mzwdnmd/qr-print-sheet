@@ -21,6 +21,7 @@ try {
   await page.locator("#photo-input").setInputFiles(resolve(fixture));
   await page.getByText(/识别完成：1 个不同的二维码/).waitFor({ timeout: 30_000 });
   if (baseSize !== 1.60) await page.locator("#base-size").fill(baseSize.toFixed(2));
+  await page.locator("#paper-grid .paper-module").first().waitFor({ timeout: 30_000 });
   const modules = await page.locator("#paper-grid .paper-module").count();
   const expectedModules = baseSize === 1.60 ? 15 : baseSize === 2.80 ? 6 : null;
   if (modules !== expectedModules || await page.locator("#paper-grid .paper-module img").count() !== modules * 9) {
