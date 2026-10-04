@@ -73,9 +73,11 @@ h2 { margin: 0; color: #17372e; font-size: 18px; line-height: 1.35; }
 .a4-tag { padding: 7px 9px; border: 1px solid #d8e7de; border-radius: 6px; color: #608275; font-size: 11px; white-space: nowrap; }
 .paper-wrap { display: flex; justify-content: center; align-items: flex-start; padding: 22px; border: 1px solid #e1e9e4; border-radius: 13px; background: #e9eeeb; }
 .paper { position: relative; width: min(100%, 460px); aspect-ratio: 210/297; background: #fff; box-shadow: 0 9px 25px #375c4a2b, 0 1px 2px #375c4a1c; }
-.paper-grid { position: absolute; left: 7.142857%; top: 5.050505%; width: 34.285714%; aspect-ratio: 1; display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr); }
-.paper-cell { display: flex; align-items: center; justify-content: center; }
-.paper-cell img { display: block; }
+.paper-grid { position: absolute; left: 3.571429%; top: 3.030303%; width: 92.857143%; height: 93.434343%; display: grid; }
+.paper-module { position: relative; box-sizing: border-box; border-top: 1px solid #999; border-left: 1px solid #999; }
+.paper-module.last-column { border-right: 1px solid #999; }
+.paper-module.last-row { border-bottom: 1px solid #999; }
+.paper-module img { position: absolute; display: block; }
 .paper-placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; color: #9aaa9f; font-size: 12px; }
 .paper-placeholder strong { color: #81998c; font-size: 13px; }
 .placeholder-icon { width: 54px; height: 54px; display: grid; place-items: center; margin-bottom: 2px; border: 1px solid #d9e9df; border-radius: 12px; color: #a4c9b2; font-size: 31px; }

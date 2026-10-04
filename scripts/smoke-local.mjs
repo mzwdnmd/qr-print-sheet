@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 
 const fixture = process.argv[2];
 if (!fixture) throw new Error("用法：node scripts/smoke-local.mjs <二维码照片路径>");
+const baseSize = Number(process.argv[3] || 1.60);
 
 const browser = await chromium.launch({
   executablePath: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
@@ -19,8 +20,11 @@ try {
   await page.goto(process.env.TEST_URL || "http://localhost:5173/", { waitUntil: "networkidle" });
   await page.locator("#photo-input").setInputFiles(resolve(fixture));
   await page.getByText(/识别完成：1 个不同的二维码/).waitFor({ timeout: 30_000 });
-  if (await page.locator("#paper-grid .paper-cell").count() !== 9) {
-    throw new Error("排版预览不是九个二维码");
+  if (baseSize !== 1.60) await page.locator("#base-size").fill(baseSize.toFixed(2));
+  const modules = await page.locator("#paper-grid .paper-module").count();
+  const expectedModules = baseSize === 1.60 ? 15 : baseSize === 2.80 ? 6 : null;
+  if (modules !== expectedModules || await page.locator("#paper-grid .paper-module img").count() !== modules * 9) {
+    throw new Error(`排版预览组数不符：预计 ${expectedModules}，实际 ${modules}`);
   }
   const output = resolve("test-artifacts");
   await mkdir(output, { recursive: true });

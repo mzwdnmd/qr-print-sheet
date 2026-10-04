@@ -7,18 +7,10 @@ import QRCode from "qrcode";
 import jsQR from "jsqr";
 import {
   AlignmentType,
-  BorderStyle,
   Document,
-  HeightRule,
   ImageRun,
   Packer,
   Paragraph,
-  Table,
-  TableCell,
-  TableLayoutType,
-  TableRow,
-  VerticalAlignTable,
-  WidthType,
 } from "docx";
 
 const BASE_URL = new URL(import.meta.env.BASE_URL, window.location.href);
@@ -49,6 +41,9 @@ const LOGO_MODULES = 10.5;
 const WHITE_PATCH_MODULES = 11.5;
 const PATCH_CORNER_MODULES = 1;
 const QUIET_MODULES = 1;
+const PAGE = { width: 21, height: 29.7, sheetWidth: 19.5, sheetHeight: 27.75 };
+const MIN_CUT_GAP_CM = 0.15;
+const PRINT_DPI = 300;
 let logoBitmapPromise;
 
 function setMessage(message, tone = "") {
@@ -117,23 +112,57 @@ function renderPreview() {
   elements.grid.replaceChildren();
   if (!state.selected || !sizes) {
     elements.placeholder.hidden = false;
-    elements.previewCount.textContent = "0 / 9";
+    elements.previewCount.textContent = "0 组 / 0 枚";
     return;
   }
   elements.placeholder.hidden = true;
-  const cellCm = Math.max(...sizes) + 0.6;
-  elements.grid.style.width = `${((cellCm * 3) / 21) * 100}%`;
-  sizes.forEach((size) => {
-    const cell = document.createElement("div");
-    cell.className = "paper-cell";
-    const image = document.createElement("img");
-    image.src = state.selected.previewUrl;
-    image.alt = `${size.toFixed(2)} 厘米二维码`;
-    image.style.width = `${(size / cellCm) * 100}%`;
-    cell.append(image);
-    elements.grid.append(cell);
-  });
-  elements.previewCount.textContent = "9 / 9";
+  const layout = getSheetLayout(sizes);
+  elements.grid.style.gridTemplateColumns = `repeat(${layout.columns}, 1fr)`;
+  elements.grid.style.gridTemplateRows = `repeat(${layout.rows}, 1fr)`;
+  for (let block = 0; block < layout.columns * layout.rows; block += 1) {
+    const module = document.createElement("div");
+    module.className = "paper-module";
+    if (block % layout.columns === layout.columns - 1) module.classList.add("last-column");
+    if (Math.floor(block / layout.columns) === layout.rows - 1) module.classList.add("last-row");
+    sizes.forEach((size, index) => {
+      const image = document.createElement("img");
+      image.src = state.selected.previewUrl;
+      image.alt = `${size.toFixed(2)} 厘米二维码`;
+      image.style.width = `${(size / layout.blockWidth) * 100}%`;
+      image.style.height = `${(size / layout.blockHeight) * 100}%`;
+      image.style.left = `${((layout.centersX[index % 3] - size / 2) / layout.blockWidth) * 100}%`;
+      image.style.top = `${((layout.centersY[Math.floor(index / 3)] - size / 2) / layout.blockHeight) * 100}%`;
+      module.append(image);
+    });
+    elements.grid.append(module);
+  }
+  const count = layout.columns * layout.rows;
+  elements.previewCount.textContent = `${count} 组 / ${count * 9} 枚`;
+}
+
+function getSheetLayout(sizes) {
+  const columnWidths = [sizes[6], sizes[7], sizes[8]];
+  const rowHeights = [sizes[2], sizes[5], sizes[8]];
+  const columnSum = columnWidths.reduce((sum, value) => sum + value, 0);
+  const rowSum = rowHeights.reduce((sum, value) => sum + value, 0);
+  const minimumWidth = columnSum + 4 * MIN_CUT_GAP_CM;
+  const minimumHeight = rowSum + 4 * MIN_CUT_GAP_CM;
+  const columns = Math.max(1, Math.floor((PAGE.sheetWidth + 1e-6) / minimumWidth));
+  const rows = Math.max(1, Math.floor((PAGE.sheetHeight + 1e-6) / minimumHeight));
+  if (minimumWidth > PAGE.sheetWidth || minimumHeight > PAGE.sheetHeight) {
+    throw new Error("九档二维码无法放进 A4 页面，请减小基准尺寸");
+  }
+  const blockWidth = PAGE.sheetWidth / columns;
+  const blockHeight = PAGE.sheetHeight / rows;
+  const columnGap = (blockWidth - columnSum) / 4;
+  const rowGap = (blockHeight - rowSum) / 4;
+  const centersX = columnWidths.map((width, index) =>
+    columnGap * (index + 1) + columnWidths.slice(0, index).reduce((sum, value) => sum + value, 0) + width / 2,
+  );
+  const centersY = rowHeights.map((height, index) =>
+    rowGap * (index + 1) + rowHeights.slice(0, index).reduce((sum, value) => sum + value, 0) + height / 2,
+  );
+  return { columns, rows, blockWidth, blockHeight, centersX, centersY };
 }
 
 async function getLogoBitmap() {
@@ -294,53 +323,76 @@ async function ingest(files) {
 
 const toTwip = (centimeters) => Math.round((centimeters / 2.54) * 1440);
 const toPixels = (centimeters) => (centimeters / 2.54) * 96;
+const toPrintPixels = (centimeters) => Math.round((centimeters / 2.54) * PRINT_DPI);
+
+async function makeSheetImage(item, sizes, layout) {
+  const bitmap = await createImageBitmap(item.blob);
+  const canvas = document.createElement("canvas");
+  canvas.width = toPrintPixels(PAGE.sheetWidth);
+  canvas.height = toPrintPixels(PAGE.sheetHeight);
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#fff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  try {
+    for (let blockRow = 0; blockRow < layout.rows; blockRow += 1) {
+      for (let blockColumn = 0; blockColumn < layout.columns; blockColumn += 1) {
+        sizes.forEach((size, index) => {
+          const x = blockColumn * layout.blockWidth + layout.centersX[index % 3] - size / 2;
+          const y = blockRow * layout.blockHeight + layout.centersY[Math.floor(index / 3)] - size / 2;
+          const left = toPrintPixels(x);
+          const top = toPrintPixels(y);
+          context.drawImage(bitmap, left, top, toPrintPixels(x + size) - left, toPrintPixels(y + size) - top);
+        });
+      }
+    }
+  } finally {
+    bitmap.close();
+  }
+  context.strokeStyle = "#777";
+  context.lineWidth = 2;
+  for (let column = 1; column < layout.columns; column += 1) {
+    const x = toPrintPixels(column * layout.blockWidth);
+    context.beginPath();
+    context.moveTo(x, 0);
+    context.lineTo(x, canvas.height);
+    context.stroke();
+  }
+  for (let row = 1; row < layout.rows; row += 1) {
+    const y = toPrintPixels(row * layout.blockHeight);
+    context.beginPath();
+    context.moveTo(0, y);
+    context.lineTo(canvas.width, y);
+    context.stroke();
+  }
+  context.strokeRect(3, 3, canvas.width - 6, canvas.height - 6);
+  return new Promise((resolve, reject) =>
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("无法生成打印页")), "image/png"),
+  );
+}
 
 async function makeWord(item, sizes) {
-  const imageBytes = new Uint8Array(await item.blob.arrayBuffer());
-  const cellTwip = toTwip(Math.max(...sizes) + 0.6);
-  const marginTwip = toTwip(1.5);
-  const rows = Array.from({ length: 3 }, (_, rowIndex) =>
-    new TableRow({
-      cantSplit: true,
-      height: { value: cellTwip, rule: HeightRule.EXACT },
-      children: Array.from({ length: 3 }, (_, columnIndex) => {
-        const size = sizes[rowIndex * 3 + columnIndex];
-        return new TableCell({
-          width: { size: cellTwip, type: WidthType.DXA },
-          verticalAlign: VerticalAlignTable.CENTER,
-          margins: { top: 0, right: 0, bottom: 0, left: 0 },
-          children: [new Paragraph({
-            alignment: AlignmentType.CENTER,
-            spacing: { before: 0, after: 0 },
-            children: [new ImageRun({
-              type: "png",
-              data: imageBytes,
-              transformation: { width: toPixels(size), height: toPixels(size) },
-            })],
-          })],
-        });
-      }),
-    }),
-  );
-  const none = { style: BorderStyle.NONE, size: 0, color: "FFFFFF" };
-  const table = new Table({
-    rows,
-    columnWidths: [cellTwip, cellTwip, cellTwip],
-    width: { size: cellTwip * 3, type: WidthType.DXA },
-    layout: TableLayoutType.FIXED,
-    alignment: AlignmentType.LEFT,
-    margins: { top: 0, right: 0, bottom: 0, left: 0 },
-    borders: { top: none, right: none, bottom: none, left: none, insideHorizontal: none, insideVertical: none },
-  });
+  const layout = getSheetLayout(sizes);
+  const sheetBlob = await makeSheetImage(item, sizes, layout);
+  const imageBytes = new Uint8Array(await sheetBlob.arrayBuffer());
   const document = new Document({
     sections: [{
       properties: {
         page: {
-          size: { width: toTwip(21), height: toTwip(29.7) },
-          margin: { top: marginTwip, right: marginTwip, bottom: marginTwip, left: marginTwip },
+          size: { width: toTwip(PAGE.width), height: toTwip(PAGE.height) },
+          margin: { top: toTwip(0.9), right: toTwip(0.75), bottom: toTwip(0.9), left: toTwip(0.75) },
         },
       },
-      children: [table],
+      children: [new Paragraph({
+        alignment: AlignmentType.LEFT,
+        spacing: { before: 0, after: 0 },
+        children: [new ImageRun({
+          type: "png",
+          data: imageBytes,
+          transformation: { width: toPixels(PAGE.sheetWidth), height: toPixels(PAGE.sheetHeight) },
+        })],
+      })],
     }],
   });
   return Packer.toBlob(document);
@@ -412,8 +464,9 @@ elements.download.addEventListener("click", async () => {
       .replace(/\.[^.]+$/, "")
       .replace(/[<>:"/\\|?*\x00-\x1f]/g, "_")
       .slice(0, 50) || "二维码";
-    downloadBlob(blob, `${stem}_九档同页.docx`);
-    setMessage("Word 文件已下载。打印时选择实际大小 / 100%。", "success");
+    downloadBlob(blob, `${stem}_九档重复排版.docx`);
+    const layout = getSheetLayout(sizes);
+    setMessage(`Word 文件已下载：${layout.columns * layout.rows} 组，组间有裁剪线。打印时选择实际大小 / 100%。`, "success");
   } catch (error) {
     setMessage(`生成失败：${error.message || String(error)}`, "error");
   } finally {
